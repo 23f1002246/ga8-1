@@ -110,27 +110,37 @@ def promote(body):
             failed_gates.setdefault(vid, []).append("INVALID_POLICY")
 
     eligible = []
+    eligible_vids = set()
     for vid, v_entry in lookup.items():
         codes = _version_eligible(v_entry, policy, as_of_dt) if policy_valid and as_of_dt else ["INVALID_POLICY"]
         if codes:
             failed_gates.setdefault(vid, []).extend(codes)
         else:
             eligible.append(v_entry)
+            eligible_vids.add(vid)
 
     eligible.sort(key=lambda v: (
         -v["evaluation"]["accuracy"], v["evaluation"]["latencyMs"], v["evaluation"]["sizeBytes"], int(v["version"])
     ))
 
+    # failedGates must contain EVERY input version. Versions with no gate codes
+    # (the eligible ones) still appear, mapped to an empty array.
+    for vid in lookup:
+        failed_gates.setdefault(vid, [])
+
     champion_entry = lookup.get(champion_version)
-    champion_eligible = champion_entry is not None and champion_version not in failed_gates
+    champion_eligible = champion_entry is not None and champion_version in eligible_vids
 
     for vid in failed_gates:
         failed_gates[vid] = sort_dedupe_codes(failed_gates[vid])
 
+    # eligibleVersions preserves the ranking order (best first), not byte order.
+    eligible_versions_ranked = [v["version"] for v in eligible]
+
     if not champion_eligible:
         return 200, {
             "action": "block", "championVersion": champion_version, "selectedVersion": None,
-            "eligibleVersions": sorted([v["version"] for v in eligible], key=utf8_sort_key),
+            "eligibleVersions": eligible_versions_ranked,
             "failedGates": failed_gates, "aliasMutation": None, "evidence": None,
         }
 
@@ -160,7 +170,7 @@ def promote(body):
         "action": action,
         "championVersion": champion_version,
         "selectedVersion": selected["version"],
-        "eligibleVersions": sorted([v["version"] for v in eligible], key=utf8_sort_key),
+        "eligibleVersions": eligible_versions_ranked,
         "failedGates": failed_gates,
         "aliasMutation": alias_mutation,
         "evidence": selected["evaluation"],

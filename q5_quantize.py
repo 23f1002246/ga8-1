@@ -103,23 +103,33 @@ def _select(body):
         return 400, {"error": "INVALID_INPUT"}
 
     stored = _FREEZES.get(freeze_id)
-    if stored is None or stored["response"]["candidates"] != candidates:
-        return 200, {"freezeId": freeze_id, "selected": None, "results": [], "packageManifest": None}
+    if stored is None:
+        return 200, {"freezeId": freeze_id, "selected": None, "results": [], "packageManifest": None,
+                     "reasonCodes": ["NOT_FROZEN"]}
+    stored_candidates = stored["response"]["candidates"]
+    if stored_candidates != candidates:
+        # supplied candidate array must exactly equal the stored freeze response
+        return 200, {"freezeId": freeze_id, "selected": None, "results": [], "packageManifest": None,
+                     "reasonCodes": ["INVALID_LINEAGE"]}
 
     latencies = body.get("latencies", {})
     order = policy.get("candidateOrder", [])
-    if set(order) != set(c["name"] for c in candidates):
-        return 200, {"freezeId": freeze_id, "selected": None, "results": [], "packageManifest": None}
+    if not isinstance(order, list) or set(order) != set(c["name"] for c in stored_candidates) \
+            or len(set(order)) != len(order):
+        return 200, {"freezeId": freeze_id, "selected": None, "results": [], "packageManifest": None,
+                     "reasonCodes": ["INVALID_POLICY"]}
+
+    # Index stored candidates by name; ALWAYS use stored (recomputed) manifest values,
+    # never the submitted totalBytes/packageDigest.
+    stored_by_name = {c["name"]: c for c in stored_candidates}
 
     results = []
-    for cand in candidates:
-        name = cand["name"]
+    for name in [c["name"] for c in stored_candidates]:
+        cand = stored_by_name[name]
         codes = []
         if cand.get("status") != "frozen":
             codes.append("NOT_FROZEN")
 
-        recomputed_inv = _compute_inventory({i["name"]: None for i in cand.get("inventory", [])}) \
-            if False else cand.get("inventory", [])
         total_bytes = cand.get("totalBytes")
         manifest_valid = cand.get("packageDigest") is not None and total_bytes is not None
         if not manifest_valid:
@@ -130,7 +140,7 @@ def _select(body):
         if not lat_valid:
             codes.append("INVALID_LINEAGE")
 
-        preds_valid = True
+        preds_valid = len(rows) > 0
         for r in rows:
             preds = r.get("predictions", {})
             if not isinstance(preds, dict) or name not in preds or preds[name] not in (0, 1) \
@@ -142,7 +152,7 @@ def _select(body):
 
         aggregate = None
         slices_out = {}
-        if preds_valid and len(rows) > 0:
+        if preds_valid:
             correct = sum(1 for r in rows if r["label"] == r["predictions"][name])
             aggregate = round(correct / len(rows), 12)
             if aggregate < policy.get("aggregateFloor", 0):
@@ -176,7 +186,7 @@ def _select(body):
         })
 
     order_index = {n: i for i, n in enumerate(order)}
-    results.sort(key=lambda r: order_index.get(r["name"], 1_000_000_000))
+    results.sort(key=lambda r: (order_index.get(r["name"], 1_000_000_000), utf8_sort_key(r["name"])))
 
     admitted_results = [r for r in results if r["admitted"]]
     selected = None
@@ -185,10 +195,7 @@ def _select(body):
         admitted_results.sort(key=lambda r: (r["totalBytes"], r["latencyMs"], order_index.get(r["name"], 0)))
         winner = admitted_results[0]
         selected = winner["name"]
-        for c in candidates:
-            if c["name"] == selected:
-                winner_manifest = c
-                break
+        winner_manifest = stored_by_name.get(selected)
 
     return 200, {
         "freezeId": freeze_id, "selected": selected, "results": results,

@@ -93,25 +93,39 @@ def _repair(body):
     trainable_params = []
     trainable_count = 0
     if params_valid:
+        # Every parameter must have a unique string name and a positive safe-int numel.
         names_seen = set()
         for p in params:
-            if not isinstance(p, dict) or not isinstance(p.get("name"), str) or p["name"] in names_seen \
-                    or not is_positive_safe_int(p.get("numel")):
+            if not isinstance(p, dict) or not isinstance(p.get("name"), str) or p["name"] == "" \
+                    or p["name"] in names_seen or not is_positive_safe_int(p.get("numel")):
                 params_valid = False
                 break
             names_seen.add(p["name"])
         if params_valid:
+            # LoRA-trainable = allowed target AND name ends with lora_A/lora_B weight.
             lora_params = [p for p in params
                             if p.get("target") in allowed_targets
                             and (p["name"].endswith(".lora_A.weight") or p["name"].endswith(".lora_B.weight"))]
             if len(lora_params) == 0:
+                # No trainable LoRA parameter present -> invalid PEFT config.
                 params_valid = False
             else:
                 lora_params.sort(key=lambda p: utf8_sort_key(p["name"]))
                 trainable_params = [p["name"] for p in lora_params]
-                trainable_count = sum(p["numel"] for p in lora_params)
+                total = 0
+                for p in lora_params:
+                    total += p["numel"]
+                # "safely sum": result must stay a safe integer
+                if total > (2**53 - 1):
+                    params_valid = False
+                    trainable_params = []
+                    trainable_count = 0
+                else:
+                    trainable_count = total
     if not params_valid:
         codes.append("INVALID_PARAMETER")
+        trainable_params = []
+        trainable_count = 0
 
     peft_config_pass = params_valid and template_pass
     if not template_pass:

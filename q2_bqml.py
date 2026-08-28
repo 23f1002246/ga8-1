@@ -205,12 +205,21 @@ def _evaluate(body):
 
     codes = []
     rows_valid = True
+    if len(rows) == 0:
+        rows_valid = False  # empty rows cannot be evaluated; treated like invalid for metric/slice purposes
     for r in rows:
         if not isinstance(r, dict) or r.get("label") not in (0, 1) or r.get("prediction") not in (0, 1) \
                 or not (isinstance(r.get("slice"), str) and r.get("slice") != ""):
             rows_valid = False
             break
-    if not rows_valid:
+    # INVALID_TEST_ROW only applies when a row is actually malformed, not merely empty list
+    any_row_malformed = False
+    for r in rows:
+        if not isinstance(r, dict) or r.get("label") not in (0, 1) or r.get("prediction") not in (0, 1) \
+                or not (isinstance(r.get("slice"), str) and r.get("slice") != ""):
+            any_row_malformed = True
+            break
+    if any_row_malformed:
         codes.append("INVALID_TEST_ROW")
 
     byte_ok = bytes_processed <= max_bytes
@@ -220,10 +229,10 @@ def _evaluate(body):
     # criticalSlicePass is false for: invalid input, invalid lineage, invalid test row,
     # a missing required slice, or a failed slice floor. It does NOT reflect the
     # aggregate-accuracy gate or the byte-limit gate.
-    critical_pass = rows_valid  # False immediately if any row was invalid
+    critical_pass = rows_valid  # False if any row invalid OR rows empty
 
     test_metric = None
-    if rows_valid and len(rows) > 0:
+    if rows_valid:
         correct = sum(1 for r in rows if r["label"] == r["prediction"])
         agg = round(correct / len(rows), 12)
         test_metric = agg
