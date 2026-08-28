@@ -165,7 +165,7 @@ class _EvidenceConflict(Exception):
 
 def pipeline(body):
     if not isinstance(body, dict):
-        return 400, {"error": "INVALID_REQUEST"}
+        return 409, {"error": "INVALID_REQUEST"}
     session = body.get("session")
     revision = body.get("revision")
     inputs = body.get("inputs")
@@ -173,11 +173,11 @@ def pipeline(body):
 
     if not (isinstance(session, str) and session != "") or not is_positive_safe_int(revision) \
             or not isinstance(inputs, dict) or not isinstance(events, list):
-        return 400, {"error": "INVALID_REQUEST"}
+        return 409, {"error": "INVALID_REQUEST"}
 
     for f in REQUIRED_INPUTS:
         if not (isinstance(inputs.get(f), str) and inputs[f] != ""):
-            return 400, {"error": "INVALID_REQUEST"}
+            return 409, {"error": "INVALID_REQUEST"}
 
     if session not in _SESSIONS:
         _SESSIONS[session] = _new_state()
@@ -207,13 +207,16 @@ def pipeline(body):
     snapshot = copy.deepcopy(state)
     try:
         for ev in events:
+            # Structural validity: must be an object with exactly the 8 named fields
+            # and a non-empty string eventId. A structurally malformed event is an
+            # INVALID_EVENT 409 (rolls back the whole batch).
             if not isinstance(ev, dict) or set(ev.keys()) != {
                 "eventId", "revision", "node", "attempt", "status", "key", "artifactDigest", "receiptId"
             }:
-                continue  # invalid event shape -> ignored, does not consume id
+                raise _ConflictErr("INVALID_EVENT")
             eid = ev.get("eventId")
             if not isinstance(eid, str) or eid == "":
-                continue
+                raise _ConflictErr("INVALID_EVENT")
 
             if ev.get("revision") != state["revision"]:
                 ignored_ids.append(eid)
